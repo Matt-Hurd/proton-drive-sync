@@ -261,6 +261,7 @@ export async function createNode(
       nodeUid: 'dry-run-node-uid',
       parentNodeUid: 'dry-run-parent-uid',
       isDirectory: false,
+      contentSha1: null,
     };
   }
   // Check if path exists locally
@@ -279,6 +280,7 @@ export async function createNode(
         success: false,
         error: `Local path not found: ${localPath}. For creating a new directory, add a trailing slash to remotePath.`,
         isDirectory: false,
+        contentSha1: null,
       };
     }
   }
@@ -293,6 +295,7 @@ export async function createNode(
       success: false,
       error: `Failed to get root folder: ${rootFolder.error}`,
       isDirectory,
+      contentSha1: null,
     };
   }
 
@@ -309,13 +312,20 @@ export async function createNode(
   try {
     if (isDirectory) {
       const nodeUid = await createDirectory(client, targetFolderUid, name, pathStat?.mtime);
-      return { success: true, nodeUid, parentNodeUid: targetFolderUid, isDirectory: true };
+      return {
+        success: true,
+        nodeUid,
+        parentNodeUid: targetFolderUid,
+        isDirectory: true,
+        contentSha1: null,
+      };
     } else {
       if (!pathStat) {
         return {
           success: false,
           error: `Cannot upload file: stat unavailable for ${localPath}`,
           isDirectory: false,
+          contentSha1: null,
         };
       }
       const { nodeUid, contentSha1 } = await uploadFile(
@@ -338,6 +348,7 @@ export async function createNode(
       success: false,
       error: (error as Error).message,
       isDirectory,
+      contentSha1: null,
     };
   }
 }
