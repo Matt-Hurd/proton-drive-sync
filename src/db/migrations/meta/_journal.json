@@ -57,6 +57,13 @@
       "when": 1767830400000,
       "tag": "0007_overlapping_sync_dirs",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1772265600000,
+      "tag": "0008_file_state_sha1",
+      "breakpoints": true
     }
   ]
 }

@@ -165,6 +165,7 @@ export interface CreateResult {
   parentNodeUid?: string;
   error?: string;
   isDirectory: boolean;
+  contentSha1?: string | null;
 }
 
 export interface DeleteOperationResult {

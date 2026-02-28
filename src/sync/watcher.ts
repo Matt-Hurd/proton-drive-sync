@@ -33,7 +33,7 @@ export interface FileChange {
 }
 
 export type FileChangeHandler = (file: FileChange) => void;
-export type FileChangeBatchHandler = (files: FileChange[]) => void;
+export type FileChangeBatchHandler = (files: FileChange[]) => void | Promise<void>;
 
 // ============================================================================
 // State
@@ -270,7 +270,7 @@ export async function queryAllChanges(
     const changes = compareWithStoredChangeTokens(watchDir, fsState, storedTokens);
 
     if (changes.length > 0) {
-      onFileChangeBatch(changes);
+      await onFileChangeBatch(changes);
       totalChanges += changes.length;
     }
   }
@@ -285,14 +285,14 @@ export async function queryAllChanges(
 /**
  * Handle file add event
  */
-function handleFileAdd(
+async function handleFileAdd(
   watchDir: string,
   fullPath: string,
   stats: Stats,
   callback: FileChangeBatchHandler
-): void {
+): Promise<void> {
   const relativePath = relative(watchDir, fullPath);
-  callback([
+  await callback([
     {
       name: relativePath,
       size: stats.size,
@@ -309,14 +309,14 @@ function handleFileAdd(
 /**
  * Handle directory add event
  */
-function handleDirAdd(
+async function handleDirAdd(
   watchDir: string,
   fullPath: string,
   stats: Stats,
   callback: FileChangeBatchHandler
-): void {
+): Promise<void> {
   const relativePath = relative(watchDir, fullPath);
-  callback([
+  await callback([
     {
       name: relativePath,
       size: stats.size,
@@ -333,12 +333,12 @@ function handleDirAdd(
 /**
  * Handle file change event
  */
-function handleFileChange(
+async function handleFileChange(
   watchDir: string,
   fullPath: string,
   stats: Stats,
   callback: FileChangeBatchHandler
-): void {
+): Promise<void> {
   const relativePath = relative(watchDir, fullPath);
 
   // Check if file actually changed using change token
@@ -351,7 +351,7 @@ function handleFileChange(
     return;
   }
 
-  callback([
+  await callback([
     {
       name: relativePath,
       size: stats.size,
@@ -368,13 +368,13 @@ function handleFileChange(
 /**
  * Handle file unlink (delete) event
  */
-function handleFileUnlink(
+async function handleFileUnlink(
   watchDir: string,
   fullPath: string,
   callback: FileChangeBatchHandler
-): void {
+): Promise<void> {
   const relativePath = relative(watchDir, fullPath);
-  callback([
+  await callback([
     {
       name: relativePath,
       size: 0,
@@ -391,13 +391,13 @@ function handleFileUnlink(
 /**
  * Handle directory unlink (delete) event
  */
-function handleDirUnlink(
+async function handleDirUnlink(
   watchDir: string,
   fullPath: string,
   callback: FileChangeBatchHandler
-): void {
+): Promise<void> {
   const relativePath = relative(watchDir, fullPath);
-  callback([
+  await callback([
     {
       name: relativePath,
       size: 0,
@@ -452,23 +452,49 @@ export async function setupWatchSubscriptions(
 
       watcher
         .on('add', (path, stats) => {
-          if (stats) handleFileAdd(watchDir, path, stats, onFileChangeBatch);
+          if (stats) {
+            handleFileAdd(watchDir, path, stats, onFileChangeBatch).catch((err: unknown) => {
+              logger.error(
+                `Error handling file add ${path}: ${err instanceof Error ? err.message : String(err)}`
+              );
+            });
+          }
         })
         .on('addDir', (path, stats) => {
           // Skip the root directory itself
           if (path === watchDir) return;
-          if (stats) handleDirAdd(watchDir, path, stats, onFileChangeBatch);
+          if (stats) {
+            handleDirAdd(watchDir, path, stats, onFileChangeBatch).catch((err: unknown) => {
+              logger.error(
+                `Error handling dir add ${path}: ${err instanceof Error ? err.message : String(err)}`
+              );
+            });
+          }
         })
         .on('change', (path, stats) => {
-          if (stats) handleFileChange(watchDir, path, stats, onFileChangeBatch);
+          if (stats) {
+            handleFileChange(watchDir, path, stats, onFileChangeBatch).catch((err: unknown) => {
+              logger.error(
+                `Error handling file change ${path}: ${err instanceof Error ? err.message : String(err)}`
+              );
+            });
+          }
         })
         .on('unlink', (path) => {
-          handleFileUnlink(watchDir, path, onFileChangeBatch);
+          handleFileUnlink(watchDir, path, onFileChangeBatch).catch((err: unknown) => {
+            logger.error(
+              `Error handling file unlink ${path}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          });
         })
         .on('unlinkDir', (path) => {
           // Skip the root directory itself
           if (path === watchDir) return;
-          handleDirUnlink(watchDir, path, onFileChangeBatch);
+          handleDirUnlink(watchDir, path, onFileChangeBatch).catch((err: unknown) => {
+            logger.error(
+              `Error handling dir unlink ${path}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          });
         })
         .on('error', (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
@@ -546,7 +572,7 @@ export async function triggerFullReconciliation(
     const changes = compareWithStoredChangeTokens(watchDir, fsState, storedTokens);
 
     if (changes.length > 0) {
-      onFileChangeBatch(changes);
+      await onFileChangeBatch(changes);
       totalChanges += changes.length;
     }
   }

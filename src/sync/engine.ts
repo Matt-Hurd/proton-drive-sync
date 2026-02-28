@@ -36,10 +36,12 @@ import {
   setSyncConcurrency,
 } from './processor.js';
 import {
-  getChangeToken,
+  getFileState,
   deleteChangeToken,
   deleteChangeTokensUnderPath,
   cleanupOrphanedChangeTokens,
+  computeFileSha1,
+  updateChangeToken,
 } from './fileState.js';
 import {
   getNodeMapping,
@@ -106,10 +108,54 @@ function resolveSyncTarget(
 // ============================================================================
 
 /**
+ * Check whether a file change should be enqueued or can be skipped.
+ *
+ * Performs a single DB read to get both the change token and stored SHA1.
+ * - If mtime:size matches the stored token, skip (no change).
+ * - If mtime:size differs but a stored SHA1 exists and matches the local file,
+ *   update the stored token and skip (mtime shifted but content unchanged).
+ * - Otherwise, enqueue the job.
+ *
+ * Returns the stored change token (for logging) and whether to enqueue.
+ */
+async function shouldEnqueueFileChange(
+  localPath: string,
+  newHash: string,
+  fileName: string,
+  dryRun: boolean
+): Promise<{ enqueue: boolean; storedToken: string | null }> {
+  const state = db.transaction((tx) => getFileState(localPath, tx));
+
+  // Token matches — nothing changed
+  if (state && state.changeToken === newHash) {
+    logger.debug(`[skip] mtime+size unchanged: ${fileName}`);
+    return { enqueue: false, storedToken: state.changeToken };
+  }
+
+  // SHA1 fallback: mtime:size changed but content may be the same
+  if (state?.contentSha1) {
+    const localSha1 = await computeFileSha1(localPath);
+    if (localSha1 && localSha1.toLowerCase() === state.contentSha1.toLowerCase()) {
+      logger.debug(`[skip] SHA1 unchanged after mtime shift: ${fileName}`);
+      db.transaction((tx) => {
+        updateChangeToken(localPath, newHash, dryRun, tx);
+      });
+      return { enqueue: false, storedToken: state.changeToken };
+    }
+  }
+
+  return { enqueue: true, storedToken: state?.changeToken ?? null };
+}
+
+/**
  * Process a single file change event.
  * Each watcher event creates one sync job for its corresponding sync_dir.
+ *
+ * When mtime:size differs but a stored SHA1 exists, computes local SHA1
+ * and skips enqueueing if the content hasn't actually changed (e.g. after
+ * macOS reboot shifts mtimes).
  */
-function handleFileChange(file: FileChange, config: Config, dryRun: boolean): void {
+async function handleFileChange(file: FileChange, config: Config, dryRun: boolean): Promise<void> {
   const target = resolveSyncTarget(file, config);
 
   if (!target) {
@@ -159,8 +205,8 @@ function handleFileChange(file: FileChange, config: Config, dryRun: boolean): vo
 
   if (file.new) {
     // CREATE event
-    db.transaction((tx) => {
-      if (isDirectory) {
+    if (isDirectory) {
+      db.transaction((tx) => {
         // Check if directory already synced for this remote target
         const existingMapping = getNodeMapping(localPath, remotePath, tx);
         if (existingMapping) {
@@ -178,26 +224,26 @@ function handleFileChange(file: FileChange, config: Config, dryRun: boolean): vo
           dryRun,
           tx
         );
-      } else {
-        // File - check if mtime+size matches stored value
-        const storedHash = getChangeToken(localPath, tx);
-        if (storedHash && storedHash === newHash) {
-          logger.debug(`[skip] create mtime+size unchanged: ${file.name}`);
-          return;
-        }
+      });
+    } else {
+      // File — token check + SHA1 fallback (single DB read)
+      const { enqueue } = await shouldEnqueueFileChange(localPath, newHash, file.name, dryRun);
+      if (enqueue) {
         logger.info(`[watcher] [create] ${file.name}`);
-        enqueueJob(
-          {
-            eventType: SyncEventType.CREATE_FILE,
-            localPath,
-            remotePath,
-            changeToken: newHash,
-          },
-          dryRun,
-          tx
-        );
+        db.transaction((tx) => {
+          enqueueJob(
+            {
+              eventType: SyncEventType.CREATE_FILE,
+              localPath,
+              remotePath,
+              changeToken: newHash,
+            },
+            dryRun,
+            tx
+          );
+        });
       }
-    });
+    }
     return;
   }
 
@@ -207,35 +253,42 @@ function handleFileChange(file: FileChange, config: Config, dryRun: boolean): vo
     return;
   }
 
-  db.transaction((tx) => {
-    const storedHash = getChangeToken(localPath, tx);
-    if (storedHash && storedHash === newHash) {
-      logger.debug(`[skip] mtime+size unchanged: ${file.name}`);
-      return;
-    }
-
+  // File — token check + SHA1 fallback (single DB read)
+  const { enqueue, storedToken } = await shouldEnqueueFileChange(
+    localPath,
+    newHash,
+    file.name,
+    dryRun
+  );
+  if (enqueue) {
     logger.info(
-      `[watcher] [update] ${file.name} (mtime+size: ${storedHash || 'none'} -> ${newHash})`
+      `[watcher] [update] ${file.name} (mtime+size: ${storedToken || 'none'} -> ${newHash})`
     );
-    enqueueJob(
-      {
-        eventType: SyncEventType.UPDATE,
-        localPath,
-        remotePath,
-        changeToken: newHash,
-      },
-      dryRun,
-      tx
-    );
-  });
+    db.transaction((tx) => {
+      enqueueJob(
+        {
+          eventType: SyncEventType.UPDATE,
+          localPath,
+          remotePath,
+          changeToken: newHash,
+        },
+        dryRun,
+        tx
+      );
+    });
+  }
 }
 
 /**
  * Process a batch of file change events (from startup scan or reconciliation).
  */
-function handleFileChangeBatch(files: FileChange[], config: Config, dryRun: boolean): void {
+async function handleFileChangeBatch(
+  files: FileChange[],
+  config: Config,
+  dryRun: boolean
+): Promise<void> {
   for (const file of files) {
-    handleFileChange(file, config, dryRun);
+    await handleFileChange(file, config, dryRun);
   }
 }
 
@@ -391,7 +444,7 @@ interface BackgroundReconciliationHandle {
  */
 function startBackgroundReconciliation(
   dryRun: boolean,
-  onFileChangeBatch: (files: FileChange[]) => void
+  onFileChangeBatch: (files: FileChange[]) => void | Promise<void>
 ): BackgroundReconciliationHandle {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let running = true;
@@ -438,7 +491,7 @@ function startBackgroundReconciliation(
             `[reconcile] Found missed change: ${change.name} (${change.exists ? 'exists' : 'deleted'})`
           );
         }
-        onFileChangeBatch(changes);
+        await onFileChangeBatch(changes);
         totalChanges += changes.length;
       }
     }

@@ -11,7 +11,6 @@
  */
 
 import { statSync, type Stats } from 'fs';
-import { createHash } from 'crypto';
 import { extname } from 'path';
 import type {
   CreateProtonDriveClient,
@@ -21,6 +20,7 @@ import type {
 } from './types.js';
 import { parsePath, findFileByName, findFolderByName } from './utils.js';
 import { logger } from '../logger.js';
+import { computeFileSha1 } from '../sync/fileState.js';
 
 // Re-export the client type for backwards compatibility
 export type { CreateProtonDriveClient, CreateResult } from './types.js';
@@ -71,36 +71,6 @@ async function ensureRemotePath(
   }
 
   return currentFolderUid;
-}
-
-// ============================================================================
-// Hash Utilities
-// ============================================================================
-
-/**
- * Compute SHA1 hash of a local file without buffering whole file in memory
- */
-async function computeFileSha1(filePath: string): Promise<string | null> {
-  try {
-    const hash = createHash('sha1');
-    const stream = Bun.file(filePath).stream();
-    for await (const chunk of stream) {
-      // chunk can be ArrayBuffer | BufferSource | string; normalize to Buffer
-      if (typeof chunk === 'string') {
-        hash.update(chunk);
-      } else if (chunk instanceof ArrayBuffer) {
-        hash.update(Buffer.from(chunk));
-      } else if (ArrayBuffer.isView(chunk)) {
-        hash.update(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
-      } else {
-        hash.update(Buffer.from(chunk));
-      }
-    }
-    return hash.digest('hex');
-  } catch (error) {
-    logger.warn(`Failed to compute SHA1 for ${filePath}: ${error}`);
-    return null;
-  }
 }
 
 // ============================================================================
@@ -170,7 +140,7 @@ async function uploadFile(
   localFilePath: string,
   fileName: string,
   fileStat: Stats
-): Promise<string> {
+): Promise<{ nodeUid: string; contentSha1: string | null }> {
   const fileSize = Number(fileStat.size);
 
   // Check if file already exists in the target folder
@@ -184,6 +154,7 @@ async function uploadFile(
   };
 
   let uploadController: UploadController;
+  let localSha1: string | null = null;
 
   if (existingFile) {
     // Compare files using SHA1 digest - skip upload only if hashes match
@@ -202,13 +173,13 @@ async function uploadFile(
 
       if (remoteSha1) {
         // Compare using SHA1 digest - most reliable method
-        const localSha1 = await computeFileSha1(localFilePath);
+        localSha1 = await computeFileSha1(localFilePath);
         logger.debug(`SHA1 comparison for ${fileName}: remote=${remoteSha1}, local=${localSha1}`);
 
         if (localSha1 && localSha1.toLowerCase() === remoteSha1.toLowerCase()) {
           // SHA1 matches - files are identical, skip upload
           logger.info(`Skipping upload for ${fileName} - SHA1 digests match`);
-          return existingFile.uid;
+          return { nodeUid: existingFile.uid, contentSha1: localSha1 };
         }
 
         // SHA1 differs - content is different, always upload
@@ -233,7 +204,12 @@ async function uploadFile(
 
   // Wait for completion
   const { nodeUid } = await uploadController.completion();
-  return nodeUid;
+
+  // Compute SHA1 for local caching (skip if already computed during comparison)
+  if (!localSha1) {
+    localSha1 = await computeFileSha1(localFilePath);
+  }
+  return { nodeUid, contentSha1: localSha1 };
 }
 
 // ============================================================================
@@ -342,8 +318,20 @@ export async function createNode(
           isDirectory: false,
         };
       }
-      const nodeUid = await uploadFile(client, targetFolderUid, localPath, name, pathStat);
-      return { success: true, nodeUid, parentNodeUid: targetFolderUid, isDirectory: false };
+      const { nodeUid, contentSha1 } = await uploadFile(
+        client,
+        targetFolderUid,
+        localPath,
+        name,
+        pathStat
+      );
+      return {
+        success: true,
+        nodeUid,
+        parentNodeUid: targetFolderUid,
+        isDirectory: false,
+        contentSha1,
+      };
     }
   } catch (error) {
     return {

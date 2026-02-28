@@ -107,6 +107,7 @@ export const processingQueue = sqliteTable('processing_queue', {
 export const fileState = sqliteTable('file_state', {
   localPath: text('local_path').primaryKey(),
   changeToken: text('change_token').notNull(),
+  contentSha1: text('content_sha1'),
   updatedAt: integer('updated_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),

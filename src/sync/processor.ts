@@ -29,8 +29,8 @@ import {
   deleteNodeMappingsUnderPath,
 } from './nodes.js';
 import {
-  getChangeToken,
-  storeChangeToken,
+  getFileState,
+  storeFileState,
   deleteChangeToken,
   deleteChangeTokensUnderPath,
 } from './fileState.js';
@@ -132,7 +132,12 @@ async function createNodeOrThrow(
   localPath: string,
   remotePath: string,
   dryRun: boolean
-): Promise<{ nodeUid: string; parentNodeUid: string; isDirectory: boolean }> {
+): Promise<{
+  nodeUid: string;
+  parentNodeUid: string;
+  isDirectory: boolean;
+  contentSha1: string | null;
+}> {
   const result = await createNode(client, localPath, remotePath, dryRun);
   if (!result.success || !result.nodeUid) {
     throw new Error(result.error ?? 'createNode returned success but no nodeUid');
@@ -141,6 +146,7 @@ async function createNodeOrThrow(
     nodeUid: result.nodeUid,
     parentNodeUid: result.parentNodeUid ?? 'unknown',
     isDirectory: result.isDirectory ?? false,
+    contentSha1: result.contentSha1 ?? null,
   };
 }
 
@@ -228,18 +234,18 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
       case SyncEventType.UPDATE: {
         const typeLabel = eventType === SyncEventType.CREATE_FILE ? 'Creating' : 'Updating';
         logger.info(`${typeLabel}: ${remotePath}`);
-        const { nodeUid, parentNodeUid, isDirectory } = await createNodeOrThrow(
+        const { nodeUid, parentNodeUid, isDirectory, contentSha1 } = await createNodeOrThrow(
           client,
           localPath,
           remotePath,
           dryRun
         );
         logger.info(`Success: ${remotePath} -> ${nodeUid}`);
-        // Store node mapping and change token for future operations
+        // Store node mapping and file state for future operations
         db.transaction((tx) => {
           setNodeMapping(localPath, remotePath, nodeUid, parentNodeUid, isDirectory, dryRun, tx);
           if (job.changeToken) {
-            storeChangeToken(localPath, job.changeToken, dryRun, tx);
+            storeFileState(localPath, job.changeToken, contentSha1, dryRun, tx);
           }
           markJobSynced(id, localPath, dryRun, tx);
         });
@@ -262,7 +268,7 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
         db.transaction((tx) => {
           setNodeMapping(localPath, remotePath, nodeUid, parentNodeUid, true, dryRun, tx);
           if (job.changeToken) {
-            storeChangeToken(localPath, job.changeToken, dryRun, tx);
+            storeFileState(localPath, job.changeToken, null, dryRun, tx);
           }
           markJobSynced(id, localPath, dryRun, tx);
         });
@@ -300,7 +306,7 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
               );
             } else {
               // Check if file already synced with same change token
-              const storedToken = getChangeToken(childPath, tx);
+              const storedToken = getFileState(childPath, tx)?.changeToken;
               if (storedToken && storedToken === childHash) {
                 logger.debug(`[skip] child file already synced: ${basename(childPath)}`);
                 continue;
