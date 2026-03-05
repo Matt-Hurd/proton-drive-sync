@@ -203,6 +203,50 @@ jobs:
           event-type: update-formula
           client-payload: '{"version": "${{ github.event.release.tag_name }}", "prerelease": ${{ github.event.release.prerelease }}}'
 
+  update-nix-flake:
+    needs: package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ github.token }}
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Download release artifacts
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p artifacts
+          gh release download "v${VERSION}" \
+            -p "proton-drive-sync-linux-x64.tar.gz" \
+            -p "proton-drive-sync-linux-arm64.tar.gz" \
+            -p "proton-drive-sync-darwin-arm64.tar.gz" \
+            -p "proton-drive-sync-darwin-x64.tar.gz" \
+            -D artifacts/
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Update flake.nix
+        run: ./packaging/scripts/update-nix-flake.sh "${{ steps.version.outputs.version }}"
+        env:
+          ARTIFACTS_DIR: artifacts
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+          git commit -m "nix: update flake to v${{ steps.version.outputs.version }}"
+          git push
+
   publish-aur:
     needs: package
     runs-on: ubuntu-latest

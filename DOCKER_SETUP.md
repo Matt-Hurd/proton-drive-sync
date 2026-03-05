@@ -23,9 +23,21 @@ Run Proton Drive Sync in Docker with support for Linux x86_64 and ARM64.
    openssl rand -base64 32
 
    # Add it to .env as KEYRING_PASSWORD
-   # Set your sync directory paths (host paths)
+
+   # Host directory mount points: these map directories from your host
+   # filesystem into the Docker container so the app can access them.
+   # The actual sync configuration (which directories to watch and where
+   # to sync them on Proton Drive) is set up separately in step 5 via
+   # the dashboard.
    SYNC_DIR_1=/path/to/documents
    SYNC_DIR_2=/path/to/photos
+   ```
+
+   Then uncomment the corresponding volume mounts in `docker-compose.yml`:
+
+   ```yaml
+   - ${SYNC_DIR_1}:/data/documents
+   - ${SYNC_DIR_2}:/data/photos
    ```
 
 3. **Start the container**
@@ -56,7 +68,7 @@ Run Proton Drive Sync in Docker with support for Linux x86_64 and ARM64.
 
 5. **Configure sync directories**
 
-   Open the dashboard at http://localhost:4242 and add your sync directories:
+   Your host directories are mounted into the container under `/data/` (e.g., `SYNC_DIR_1` → `/data/documents`, `SYNC_DIR_2` → `/data/photos`). Open the dashboard at http://localhost:4242 and add these container paths as sync directories:
    - `/data/documents` → Your Proton Drive folder (e.g., `/Backup/Documents`)
    - `/data/photos` → Another Proton Drive folder (e.g., `/Backup/Photos`)
 
@@ -64,15 +76,15 @@ Run Proton Drive Sync in Docker with support for Linux x86_64 and ARM64.
 
 ### Environment Variables
 
-| Variable           | Required | Default            | Description                       |
-| ------------------ | -------- | ------------------ | --------------------------------- |
-| `KEYRING_PASSWORD` | Yes      | -                  | Encryption key for credentials    |
-| `TZ`               | No       | `UTC`              | Container timezone                |
-| `DASHBOARD_PORT`   | No       | `4242`             | Dashboard port on host            |
-| `SYNC_DIR_1`       | No       | `./data/documents` | First sync directory (host path)  |
-| `SYNC_DIR_2`       | No       | `./data/photos`    | Second sync directory (host path) |
-| `PROTON_USERNAME`  | No       | -                  | Proton username for headless auth |
-| `PROTON_PASSWORD`  | No       | -                  | Proton password for headless auth |
+| Variable           | Required | Default | Description                                            |
+| ------------------ | -------- | ------- | ------------------------------------------------------ |
+| `KEYRING_PASSWORD` | Yes      | -       | Encryption key for credentials                         |
+| `TZ`               | No       | `UTC`   | Container timezone                                     |
+| `DASHBOARD_PORT`   | No       | `4242`  | Dashboard port on host                                 |
+| `SYNC_DIR_1`       | No       | -       | Host path to mount into container at `/data/documents` |
+| `SYNC_DIR_2`       | No       | -       | Host path to mount into container at `/data/photos`    |
+| `PROTON_USERNAME`  | No       | -       | Proton username for headless auth                      |
+| `PROTON_PASSWORD`  | No       | -       | Proton password for headless auth                      |
 
 ### Container Environment
 
@@ -84,7 +96,7 @@ The container sets `DOCKER=1` automatically. This causes the dashboard to bind t
 
    ```yaml
    volumes:
-     - ${SYNC_DIR_3:-./data/videos}:/data/videos
+     - ${SYNC_DIR_3}:/data/videos
    ```
 
 2. Add the corresponding variable to your `.env`:

@@ -121,6 +121,22 @@ flatpak run io.github.damianbbitflipper.ProtonDriveSync setup
 </details>
 
 <details>
+<summary>Nix</summary>
+
+```bash
+# Run directly
+nix run github:DamianB-BitFlipper/proton-drive-sync
+
+# Install to profile
+nix profile install github:DamianB-BitFlipper/proton-drive-sync
+
+# Or add to your flake inputs
+# inputs.proton-drive-sync.url = "github:DamianB-BitFlipper/proton-drive-sync";
+```
+
+</details>
+
+<details>
 <summary>Tarball (manual)</summary>
 
 Download the Linux tarball from [GitHub Releases](https://github.com/DamianB-BitFlipper/proton-drive-sync/releases/latest):
