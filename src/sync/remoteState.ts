@@ -107,10 +107,8 @@ export function getRemoteState(nodeUid: string, tx?: Tx) {
 /**
  * Store/update a node in the remote_state table
  */
-export function upsertRemoteState(node: RemoteNode, tx?: Tx) {
-  const runner = tx || db;
-  runner
-    .insert(schema.remoteState)
+export function upsertRemoteState(node: RemoteNode, tx: Tx) {
+  tx.insert(schema.remoteState)
     .values({
       nodeUid: node.nodeUid,
       parentNodeUid: node.parentNodeUid,
@@ -138,16 +136,18 @@ export function upsertRemoteState(node: RemoteNode, tx?: Tx) {
     .run();
 }
 
-/**
- * Batch update all scanned nodes in a transaction
- */
 export function bulkUpdateRemoteState(nodes: RemoteNode[]) {
   if (nodes.length === 0) return;
-  db.transaction((tx) => {
-    for (const node of nodes) {
-      upsertRemoteState(node, tx);
-    }
-  });
+
+  const CHUNK_SIZE = 500;
+  for (let i = 0; i < nodes.length; i += CHUNK_SIZE) {
+    const chunk = nodes.slice(i, i + CHUNK_SIZE);
+    db.transaction((tx) => {
+      for (const node of chunk) {
+        upsertRemoteState(node, tx);
+      }
+    });
+  }
 }
 
 /**
@@ -156,36 +156,41 @@ export function bulkUpdateRemoteState(nodes: RemoteNode[]) {
 export function detectRemoteChanges(scannedNodes: RemoteNode[]): RemoteChange[] {
   const changes: RemoteChange[] = [];
 
-  db.transaction((tx) => {
-    for (const node of scannedNodes) {
-      if (node.isDirectory) continue;
-      const stored = getRemoteState(node.nodeUid, tx);
+  // Load ALL remote state into a Map in one query
+  const allState = db.select().from(schema.remoteState).all();
+  const stateMap = new Map<string, (typeof allState)[0]>();
+  for (const row of allState) {
+    stateMap.set(row.nodeUid, row);
+  }
 
-      if (!stored) {
-        changes.push({ type: 'NEW', node });
-      } else {
-        let modified = false;
+  for (const node of scannedNodes) {
+    if (node.isDirectory) continue;
+    const stored = stateMap.get(node.nodeUid);
 
-        if (node.revisionUid && stored.revisionUid && node.revisionUid !== stored.revisionUid) {
+    if (!stored) {
+      changes.push({ type: 'NEW', node });
+    } else {
+      let modified = false;
+
+      if (node.revisionUid && stored.revisionUid && node.revisionUid !== stored.revisionUid) {
+        modified = true;
+      } else if (stored.size !== null && node.size !== null && node.size !== stored.size) {
+        modified = true;
+      } else if (node.modificationTime && stored.modificationTime) {
+        // Compare at second-precision because SQLite timestamp mode drops milliseconds natively
+        if (
+          Math.floor(node.modificationTime.getTime() / 1000) !==
+          Math.floor(stored.modificationTime.getTime() / 1000)
+        ) {
           modified = true;
-        } else if (stored.size !== null && node.size !== null && node.size !== stored.size) {
-          modified = true;
-        } else if (node.modificationTime && stored.modificationTime) {
-          // Compare at second-precision because SQLite timestamp mode drops milliseconds natively
-          if (
-            Math.floor(node.modificationTime.getTime() / 1000) !==
-            Math.floor(stored.modificationTime.getTime() / 1000)
-          ) {
-            modified = true;
-          }
-        }
-
-        if (modified) {
-          changes.push({ type: 'MODIFIED', node });
         }
       }
+
+      if (modified) {
+        changes.push({ type: 'MODIFIED', node });
+      }
     }
-  });
+  }
 
   return changes;
 }

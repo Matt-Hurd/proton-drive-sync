@@ -187,6 +187,66 @@ export function enqueueJob(params: EnqueueJobParams, dryRun: boolean, tx: Tx): v
 }
 
 /**
+ * Batch-enqueue multiple jobs in a single transaction.
+ * Much more efficient than calling enqueueJob() in a loop.
+ * Emits a single batch event instead of per-job events.
+ */
+export function enqueueJobsBatch(jobs: EnqueueJobParams[], dryRun: boolean, tx: Tx): number {
+  if (dryRun || jobs.length === 0) return 0;
+
+  let enqueued = 0;
+  for (const params of jobs) {
+    if (!isPathWatched(params.localPath)) continue;
+
+    run(
+      tx
+        .insert(schema.syncJobs)
+        .values({
+          eventType: params.eventType,
+          localPath: params.localPath,
+          remotePath: params.remotePath,
+          status: SyncJobStatus.PENDING,
+          retryAt: new Date(),
+          nRetries: 0,
+          lastError: null,
+          changeToken: params.changeToken ?? null,
+          oldLocalPath: null,
+          oldRemotePath: null,
+          nodeUid: params.nodeUid ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [schema.syncJobs.localPath, schema.syncJobs.remotePath],
+          set: {
+            eventType: params.eventType,
+            status: SyncJobStatus.PENDING,
+            retryAt: new Date(),
+            nRetries: 0,
+            lastError: null,
+            changeToken: params.changeToken ?? null,
+            oldLocalPath: null,
+            oldRemotePath: null,
+            nodeUid: params.nodeUid ?? null,
+          },
+        })
+    );
+    enqueued++;
+  }
+
+  // Single batch event for dashboard
+  if (enqueued > 0) {
+    jobEvents.emit('job', {
+      type: 'enqueue',
+      jobId: -1, // batch marker
+      localPath: `batch(${enqueued})`,
+      remotePath: '',
+      timestamp: new Date(),
+    } satisfies JobEvent);
+  }
+
+  return enqueued;
+}
+
+/**
  * Cleans up orphaned jobs on startup.
  * - Resets any PROCESSING jobs back to PENDING (stale since app wasn't running)
  * - Deletes PENDING jobs whose localPath doesn't match any current sync_dirs

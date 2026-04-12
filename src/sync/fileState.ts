@@ -7,8 +7,8 @@
  */
 
 import { createHash } from 'crypto';
-import { eq, like } from 'drizzle-orm';
-import { type Tx } from '../db/index.js';
+import { eq, like, inArray, or, not } from 'drizzle-orm';
+import { db, run, type Tx } from '../db/index.js';
 import { fileState } from '../db/schema.js';
 import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
@@ -59,6 +59,32 @@ export function getFileState(
   const result = tx.select().from(fileState).where(eq(fileState.localPath, localPath)).get();
   if (!result) return null;
   return { changeToken: result.changeToken, contentSha1: result.contentSha1 };
+}
+
+/**
+ * Get file states for multiple paths in a single query.
+ * Much more efficient than calling getFileState() in a loop.
+ */
+export function getFileStatesBulk(
+  localPaths: string[]
+): Map<string, { changeToken: string; contentSha1: string | null }> {
+  const result = new Map<string, { changeToken: string; contentSha1: string | null }>();
+  if (localPaths.length === 0) return result;
+
+  // SQLite has a limit of ~999 bind variables. Chunk the query.
+  const CHUNK_SIZE = 900;
+  for (let i = 0; i < localPaths.length; i += CHUNK_SIZE) {
+    const chunk = localPaths.slice(i, i + CHUNK_SIZE);
+    const rows = db.select().from(fileState).where(inArray(fileState.localPath, chunk)).all();
+    for (const row of rows) {
+      result.set(row.localPath, {
+        changeToken: row.changeToken,
+        contentSha1: row.contentSha1,
+      });
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -136,23 +162,16 @@ export function cleanupOrphanedChangeTokens(tx: Tx): number {
     return 0;
   }
 
-  // Get all state entries
-  const allState = tx.select().from(fileState).all();
-  let removedCount = 0;
+  const conditions = syncDirs.flatMap((dir) => [
+    eq(fileState.localPath, dir.source_path),
+    like(fileState.localPath, `${dir.source_path}/%`),
+  ]);
 
-  for (const entry of allState) {
-    const isUnderSyncDir = syncDirs.some(
-      (dir) =>
-        entry.localPath === dir.source_path || entry.localPath.startsWith(`${dir.source_path}/`)
-    );
+  if (conditions.length === 0) return 0;
 
-    if (!isUnderSyncDir) {
-      tx.delete(fileState).where(eq(fileState.localPath, entry.localPath)).run();
-      removedCount++;
-    }
-  }
+  const result = run(tx.delete(fileState).where(not(or(...conditions)!)));
 
-  return removedCount;
+  return result.changes;
 }
 
 // ============================================================================

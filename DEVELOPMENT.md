@@ -47,3 +47,20 @@ To publish a new version:
 2. Create a new release with the respective tag
 
 The GitHub Actions release workflow will automatically build binaries for all platforms.
+
+## Large Directory Support (Linux)
+
+When syncing directories with many files (10,000+), you may need to increase
+the Linux inotify watcher limit:
+
+```bash
+# Check current limit
+cat /proc/sys/fs/inotify/max_user_watches
+
+# Increase temporarily
+sudo sysctl fs.inotify.max_user_watches=524288
+
+# Increase permanently
+echo "fs.inotify.max_user_watches=524288" | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```

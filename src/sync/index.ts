@@ -24,6 +24,7 @@ export {
 export {
   jobEvents,
   enqueueJob,
+  enqueueJobsBatch,
   getNextPendingJob,
   markJobSynced,
   markJobBlocked,

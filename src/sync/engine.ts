@@ -5,7 +5,7 @@
  */
 
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { db } from '../db/index.js';
 import { SyncEventType } from '../db/schema.js';
 import { logger } from '../logger.js';
@@ -27,7 +27,13 @@ import {
   compareWithStoredChangeTokens,
   type FileChange,
 } from './watcher.js';
-import { enqueueJob, cleanupOrphanedJobs, getPendingJobCount } from './queue.js';
+import {
+  enqueueJob,
+  enqueueJobsBatch,
+  cleanupOrphanedJobs,
+  getPendingJobCount,
+  type EnqueueJobParams,
+} from './queue.js';
 import {
   processAvailableJobs,
   waitForActiveTasks,
@@ -43,6 +49,7 @@ import {
   cleanupOrphanedChangeTokens,
   computeFileSha1,
   updateChangeToken,
+  getFileStatesBulk,
 } from './fileState.js';
 import {
   getNodeMapping,
@@ -280,8 +287,102 @@ async function handleFileChange(file: FileChange, config: Config, dryRun: boolea
   }
 }
 
+function checkInotifyLimit(): void {
+  try {
+    const limit = parseInt(readFileSync('/proc/sys/fs/inotify/max_user_watches', 'utf-8').trim());
+    if (limit < 65536) {
+      logger.warn(
+        `Low inotify watch limit (${limit}). For large directories, run: ` +
+          `sudo sysctl fs.inotify.max_user_watches=524288`
+      );
+    }
+  } catch {
+    // Not on Linux or can't read — skip
+  }
+}
+
 /**
- * Process a batch of file change events (from startup scan or reconciliation).
+ * Optimized batch handler for large file change sets (startup scan).
+ * Pre-loads all file states in bulk, then batches enqueues.
+ */
+async function handleFileChangeBatchOptimized(
+  files: FileChange[],
+  config: Config,
+  dryRun: boolean
+): Promise<void> {
+  if (files.length === 0) return;
+
+  const excludePatterns = config.exclude_patterns;
+
+  // 1. Pre-load all file states for the batch in one query
+  const localPaths = files
+    .filter((f) => !isPathExcluded(join(f.watchRoot, f.name), f.watchRoot, excludePatterns))
+    .map((f) => join(f.watchRoot, f.name));
+
+  const fileStates = getFileStatesBulk(localPaths);
+
+  // 2. Build the job list without individual DB calls
+  const jobsToEnqueue: EnqueueJobParams[] = [];
+
+  for (const file of files) {
+    const target = resolveSyncTarget(file, config);
+    if (!target) continue;
+    const { localPath, remotePath } = target;
+
+    if (isPathExcluded(localPath, file.watchRoot, excludePatterns)) continue;
+
+    if (!file.exists) {
+      // DELETE
+      jobsToEnqueue.push({
+        eventType: SyncEventType.DELETE,
+        localPath,
+        remotePath,
+        changeToken: null,
+      });
+      continue;
+    }
+
+    const newHash = `${file.mtime_ms}:${file.size}`;
+    const storedState = fileStates.get(localPath);
+
+    // Skip if mtime:size unchanged
+    if (storedState && storedState.changeToken === newHash) continue;
+
+    if (file.type === 'd') {
+      jobsToEnqueue.push({
+        eventType: SyncEventType.CREATE_DIR,
+        localPath,
+        remotePath,
+        changeToken: newHash,
+      });
+    } else if (file.new) {
+      jobsToEnqueue.push({
+        eventType: SyncEventType.CREATE_FILE,
+        localPath,
+        remotePath,
+        changeToken: newHash,
+      });
+    } else {
+      jobsToEnqueue.push({
+        eventType: SyncEventType.UPDATE,
+        localPath,
+        remotePath,
+        changeToken: newHash,
+      });
+    }
+  }
+
+  // 3. Batch enqueue in one transaction
+  if (jobsToEnqueue.length > 0) {
+    db.transaction((tx) => {
+      enqueueJobsBatch(jobsToEnqueue, dryRun, tx);
+    });
+    logger.info(`Batch enqueued ${jobsToEnqueue.length} jobs`);
+  }
+}
+
+/**
+ * Process a batch of file change events (from live watch events).
  */
 async function handleFileChangeBatch(
   files: FileChange[],
@@ -312,9 +413,9 @@ export async function runOneShotSync(options: SyncOptions): Promise<void> {
     cleanupOrphanedChangeTokens(tx);
   });
 
-  // Query all changes and enqueue jobs
+  // Query all changes and enqueue jobs (startup scan - use optimized batch handler)
   const totalChanges = await queryAllChanges(config, (files) =>
-    handleFileChangeBatch(files, config, dryRun)
+    handleFileChangeBatchOptimized(files, config, dryRun)
   );
 
   if (totalChanges === 0) {
@@ -341,6 +442,8 @@ export async function runOneShotSync(options: SyncOptions): Promise<void> {
 export async function runWatchMode(options: SyncOptions): Promise<void> {
   const { config, client, dryRun } = options;
 
+  checkInotifyLimit();
+
   await initializeWatcher();
 
   // Initialize concurrency from config
@@ -360,7 +463,9 @@ export async function runWatchMode(options: SyncOptions): Promise<void> {
   // Scan for changes that happened while we were offline
   if (config.sync_mode === 'upload' || config.sync_mode === 'bidirectional') {
     logger.info('Checking for changes since last run...');
-    const totalChanges = await queryAllChanges(config, createChangeHandler());
+    const totalChanges = await queryAllChanges(config, (files) =>
+      handleFileChangeBatchOptimized(files, config, dryRun)
+    );
     if (totalChanges > 0) {
       logger.info(`Found ${totalChanges} changes since last run`);
     } else {
@@ -390,7 +495,9 @@ export async function runWatchMode(options: SyncOptions): Promise<void> {
 
     // Scan for changes in all sync dirs (including newly added ones)
     logger.info('Checking for changes in sync directories...');
-    const totalChanges = await queryAllChanges(newConfig, createChangeHandler());
+    const totalChanges = await queryAllChanges(newConfig, (files) =>
+      handleFileChangeBatchOptimized(files, newConfig, dryRun)
+    );
     if (totalChanges > 0) {
       logger.info(`Found ${totalChanges} changes to sync`);
     }

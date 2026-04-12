@@ -5,7 +5,7 @@
  * Used to support efficient rename/move operations without re-uploading.
  */
 
-import { and, eq, like } from 'drizzle-orm';
+import { and, eq, like, or } from 'drizzle-orm';
 import { db, type Tx } from '../db/index.js';
 import { nodeMapping } from '../db/schema.js';
 import { getConfig } from '../config.js';
@@ -219,9 +219,12 @@ export function cleanupOrphanedNodeMappings(tx: Tx): number {
     return 0;
   }
 
-  // Get all mappings
-  const allMappings = tx.select().from(nodeMapping).all();
-  let removedCount = 0;
+  // Collect orphan IDs, batch delete
+  const allMappings = tx
+    .select({ localPath: nodeMapping.localPath, remotePath: nodeMapping.remotePath })
+    .from(nodeMapping)
+    .all();
+  const orphanKeys: { localPath: string; remotePath: string }[] = [];
 
   for (const mapping of allMappings) {
     // Check if this (localPath, remotePath) pair is valid for any sync_dir
@@ -236,17 +239,26 @@ export function cleanupOrphanedNodeMappings(tx: Tx): number {
     });
 
     if (!isValidPair) {
-      tx.delete(nodeMapping)
-        .where(
-          and(
-            eq(nodeMapping.localPath, mapping.localPath),
-            eq(nodeMapping.remotePath, mapping.remotePath)
-          )
-        )
-        .run();
-      removedCount++;
+      orphanKeys.push(mapping);
     }
   }
 
-  return removedCount;
+  if (orphanKeys.length === 0) return 0;
+
+  // Since nodeMapping has composite PK, we need to delete by individual conditions
+  // but can use a single SQL statement with OR conditions, chunked
+  const CHUNK_SIZE = 900;
+  for (let i = 0; i < orphanKeys.length; i += CHUNK_SIZE) {
+    const chunk = orphanKeys.slice(i, i + CHUNK_SIZE);
+    const conditions = chunk.map((key) =>
+      and(eq(nodeMapping.localPath, key.localPath), eq(nodeMapping.remotePath, key.remotePath))
+    );
+    if (conditions.length > 0) {
+      tx.delete(nodeMapping)
+        .where(or(...conditions))
+        .run();
+    }
+  }
+
+  return orphanKeys.length;
 }

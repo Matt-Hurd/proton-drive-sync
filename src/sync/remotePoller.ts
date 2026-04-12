@@ -8,8 +8,8 @@ import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 import { db } from '../db/index.js';
 import { SyncEventType } from '../db/schema.js';
-import { getFileState } from './fileState.js';
-import { enqueueJob } from './queue.js';
+import { getFileStatesBulk } from './fileState.js';
+import { enqueueJobsBatch, type EnqueueJobParams } from './queue.js';
 import { traverseRemotePath } from '../proton/utils.js';
 import {
   scanRemoteTree,
@@ -29,7 +29,6 @@ export interface RemotePollerHandle {
  * Polls for remote changes once across all sync directories.
  */
 export async function pollOnce(client: ProtonDriveClient, dryRun: boolean): Promise<number> {
-  if (client.clearEntitiesCache) client.clearEntitiesCache();
   const config = getConfig();
   let totalChangesFound = 0;
 
@@ -62,46 +61,51 @@ export async function pollOnce(client: ProtonDriveClient, dryRun: boolean): Prom
       const changes = detectRemoteChanges(scannedNodes);
 
       // 3. Process changes and enqueue jobs
-      let enqueuedChanges = 0;
-      db.transaction((tx) => {
-        for (const change of changes) {
-          const node = change.node;
+      const downloadJobs: EnqueueJobParams[] = [];
+      const localPaths = changes
+        .filter((c) => !c.node.isDirectory)
+        .map((c) =>
+          remotePathToLocalPath(c.node.remotePath, syncDir.remote_root, syncDir.source_path)
+        );
+      const fileStates = getFileStatesBulk(localPaths);
 
-          // We only enqueue downloads for files, not directories, for now
-          // Could create directories too if we wanted, but often they are created implicitly
-          if (node.isDirectory) {
-            continue;
-          }
+      for (const change of changes) {
+        const node = change.node;
 
-          const localPath = remotePathToLocalPath(
-            node.remotePath,
-            syncDir.remote_root,
-            syncDir.source_path
-          );
-
-          // Check if this file state matches our last change token (meaning we uploaded it)
-          const fileState = getFileState(localPath, tx);
-          if (fileState && change.type === 'NEW') {
-            // We already have local state for this file and it's marked as a NEW change remotely.
-            // This means we just uploaded it and this is the first remote poll seeing it.
-            continue;
-          }
-
-          enqueueJob(
-            {
-              eventType: SyncEventType.DOWNLOAD_FILE,
-              localPath,
-              remotePath: node.remotePath,
-              changeToken: null,
-              nodeUid: node.nodeUid,
-            },
-            dryRun,
-            tx
-          );
-
-          enqueuedChanges++;
+        // We only enqueue downloads for files, not directories, for now
+        // Could create directories too if we wanted, but often they are created implicitly
+        if (node.isDirectory) {
+          continue;
         }
-      });
+
+        const localPath = remotePathToLocalPath(
+          node.remotePath,
+          syncDir.remote_root,
+          syncDir.source_path
+        );
+
+        // Check if this file state matches our last change token (meaning we uploaded it)
+        if (fileStates.has(localPath) && change.type === 'NEW') {
+          // We already have local state for this file and it's marked as a NEW change remotely.
+          // This means we just uploaded it and this is the first remote poll seeing it.
+          continue;
+        }
+
+        downloadJobs.push({
+          eventType: SyncEventType.DOWNLOAD_FILE,
+          localPath,
+          remotePath: node.remotePath,
+          changeToken: null,
+          nodeUid: node.nodeUid,
+        });
+      }
+
+      let enqueuedChanges = 0;
+      if (downloadJobs.length > 0) {
+        db.transaction((tx) => {
+          enqueuedChanges = enqueueJobsBatch(downloadJobs, dryRun, tx);
+        });
+      }
 
       totalChangesFound += enqueuedChanges;
 
@@ -140,6 +144,11 @@ export function startRemotePoller(client: ProtonDriveClient, dryRun: boolean): R
         `Critical error in remote poller loop: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
+      // Clear SDK cache to free memory from large tree scans
+      if (client.clearEntitiesCache) {
+        client.clearEntitiesCache();
+      }
+
       // Schedule the next poll
       if (running) {
         timer = setTimeout(pollLoop, REMOTE_POLL_INTERVAL_MS);

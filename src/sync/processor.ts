@@ -185,6 +185,8 @@ export function processAvailableJobs(client: ProtonDriveClient, dryRun: boolean)
     // Start the job and track it
     const taskPromise = processJob(client, job, dryRun).finally(() => {
       activeTasks.delete(jobId);
+      // Immediately schedule replacement to keep concurrency fully saturated
+      setTimeout(() => processAvailableJobs(client, dryRun), 0);
     });
 
     activeTasks.set(jobId, taskPromise);
@@ -213,12 +215,25 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
         const mapping = getNodeMapping(localPath, remotePath);
         const isDirectory = mapping?.isDirectory ?? false;
 
-        const { existed, trashed } = await deleteNodeOrThrow(client, remotePath, dryRun, trashOnly);
-        if (!existed) {
-          logger.info(`Already gone: ${remotePath}`);
+        if (!mapping) {
+          // If there is no node mapping, the file/dir either never successfully uploaded,
+          // or its parent directory was already deleted (which cascade-deleted this mapping).
+          // In both cases, the item does not exist on Proton Drive. Skip the network call.
+          logger.info(`Already gone (no local mapping): ${remotePath}`);
         } else {
-          logger.info(trashed ? `Trashed: ${remotePath}` : `Permanently deleted: ${remotePath}`);
+          const { existed, trashed } = await deleteNodeOrThrow(
+            client,
+            remotePath,
+            dryRun,
+            trashOnly
+          );
+          if (!existed) {
+            logger.info(`Already gone: ${remotePath}`);
+          } else {
+            logger.info(trashed ? `Trashed: ${remotePath}` : `Permanently deleted: ${remotePath}`);
+          }
         }
+
         // Remove node mapping and file_state on delete
         db.transaction((tx) => {
           deleteChangeToken(localPath, dryRun, tx);
@@ -236,6 +251,17 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
       case SyncEventType.CREATE_FILE:
       case SyncEventType.UPDATE: {
         const typeLabel = eventType === SyncEventType.CREATE_FILE ? 'Creating' : 'Updating';
+
+        if (!existsSync(localPath)) {
+          logger.info(
+            `Aborting ${typeLabel.toLowerCase()} because local item no longer exists: ${localPath}`
+          );
+          db.transaction((tx) => {
+            markJobSynced(id, localPath, dryRun, tx);
+          });
+          return;
+        }
+
         logger.info(`${typeLabel}: ${remotePath}`);
         const { nodeUid, parentNodeUid, isDirectory, contentSha1 } = await createNodeOrThrow(
           client,
@@ -256,6 +282,16 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
       }
 
       case SyncEventType.CREATE_DIR: {
+        if (!existsSync(localPath)) {
+          logger.info(
+            `Aborting directory creation because local item no longer exists: ${localPath}`
+          );
+          db.transaction((tx) => {
+            markJobSynced(id, localPath, dryRun, tx);
+          });
+          return;
+        }
+
         logger.info(`Creating directory: ${remotePath}`);
 
         // Step 1: Create the directory on remote
@@ -366,6 +402,15 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
         } else {
           const result = await downloadNode(client, nodeUid, downloadPath, remotePath, undefined);
           if (!result.success) {
+            if (result.error?.includes('Node not found')) {
+              logger.info(
+                `Aborting downloading because remote item no longer exists: ${remotePath}`
+              );
+              db.transaction((tx) => {
+                markJobSynced(id, localPath, dryRun, tx);
+              });
+              return;
+            }
             throw new Error(result.error);
           }
 
