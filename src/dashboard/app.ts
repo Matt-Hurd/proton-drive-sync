@@ -755,8 +755,12 @@ app.get('/controls', async (c) => {
   const syncDirs = currentConfig?.sync_dirs ?? defaultConfig.sync_dirs;
   const syncDirsHtml = syncDirs.length > 0 ? renderSyncDirsHtml(syncDirs) : '';
   const showNoDirsMessage = syncDirs.length === 0;
+  const syncMode = currentConfig?.sync_mode ?? defaultConfig.sync_mode;
 
   content = content
+    .replace('{{SYNC_MODE_UPLOAD_SELECTED}}', syncMode === 'upload' ? 'selected' : '')
+    .replace('{{SYNC_MODE_DOWNLOAD_SELECTED}}', syncMode === 'download' ? 'selected' : '')
+    .replace('{{SYNC_MODE_BIDI_SELECTED}}', syncMode === 'bidirectional' ? 'selected' : '')
     .replace(/\{\{SYNC_CONCURRENCY\}\}/g, String(syncConcurrency))
     .replace('{{SYNC_DIRS_HTML}}', syncDirsHtml)
     // Replace icon placeholders

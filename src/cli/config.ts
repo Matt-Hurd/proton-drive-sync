@@ -31,6 +31,7 @@ export async function configCommand(): Promise<void> {
       message: 'What would you like to configure?',
       choices: [
         { name: 'View current config', value: 'get' },
+        { name: 'Sync mode (Direction)', value: 'sync-mode' },
         { name: 'Remote delete behavior', value: 'remote-delete' },
         { name: 'Dashboard host', value: 'dashboard-host' },
         { name: 'Dashboard port', value: 'dashboard-port' },
@@ -48,6 +49,9 @@ export async function configCommand(): Promise<void> {
     switch (action) {
       case 'get':
         getCommand(undefined, {});
+        break;
+      case 'sync-mode':
+        await syncModeCommand();
         break;
       case 'remote-delete':
         await remoteDeleteBehaviorCommand();
@@ -137,6 +141,7 @@ export function getCommand(key: string | undefined, options: GetOptions): void {
     console.log('Current configuration:\n');
     console.log(`  dashboard_host: ${config.dashboard_host}`);
     console.log(`  dashboard_port: ${config.dashboard_port}`);
+    console.log(`  sync_mode: ${config.sync_mode}`);
     console.log(`  sync_concurrency: ${config.sync_concurrency}`);
     console.log(`  remote_delete_behavior: ${config.remote_delete_behavior}`);
 
@@ -161,6 +166,59 @@ export function getCommand(key: string | undefined, options: GetOptions): void {
 
     console.log(`\nConfig file: ${CONFIG_FILE}`);
   }
+}
+
+// ============================================================================
+// Sync Mode Subcommand
+// ============================================================================
+
+/**
+ * Set sync mode (interactive if no value provided)
+ */
+export async function syncModeCommand(value?: string): Promise<void> {
+  if (value !== undefined) {
+    // Non-interactive mode
+    if (value !== 'upload' && value !== 'download' && value !== 'bidirectional') {
+      console.error('Invalid value. Must be "upload", "download", or "bidirectional".');
+      process.exit(1);
+    }
+    const config = loadConfigRaw();
+    config.sync_mode = value;
+    saveConfigRaw(config);
+    console.log(`Set sync_mode = ${value}`);
+    return;
+  }
+
+  // Interactive mode
+  const config = loadConfigRaw();
+  const current = (config.sync_mode as string) ?? defaultConfig.sync_mode;
+
+  const mode = await select({
+    message: 'What sync mode would you like to use?',
+    choices: [
+      {
+        name: 'Upload (Local to Remote only)',
+        value: 'upload',
+        description: 'Only local changes are uploaded. Remote changes are ignored.',
+      },
+      {
+        name: 'Download (Remote to Local only)',
+        value: 'download',
+        description: 'Only remote changes are downloaded. Local changes are ignored.',
+      },
+      {
+        name: 'Bidirectional (Two-way sync)',
+        value: 'bidirectional',
+        description: 'Changes in either location are synchronized to the other.',
+      },
+    ],
+    default: current,
+  });
+
+  config.sync_mode = mode;
+  saveConfigRaw(config);
+
+  console.log(`Sync mode set to: ${mode}`);
 }
 
 // ============================================================================

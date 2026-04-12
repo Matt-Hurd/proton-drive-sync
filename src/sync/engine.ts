@@ -35,6 +35,7 @@ import {
   drainQueue,
   setSyncConcurrency,
 } from './processor.js';
+import { startRemotePoller, type RemotePollerHandle } from './remotePoller.js';
 import {
   getFileState,
   deleteChangeToken,
@@ -357,16 +358,18 @@ export async function runWatchMode(options: SyncOptions): Promise<void> {
   });
 
   // Scan for changes that happened while we were offline
-  logger.info('Checking for changes since last run...');
-  const totalChanges = await queryAllChanges(config, createChangeHandler());
-  if (totalChanges > 0) {
-    logger.info(`Found ${totalChanges} changes since last run`);
-  } else {
-    logger.info('No changes since last run');
-  }
+  if (config.sync_mode === 'upload' || config.sync_mode === 'bidirectional') {
+    logger.info('Checking for changes since last run...');
+    const totalChanges = await queryAllChanges(config, createChangeHandler());
+    if (totalChanges > 0) {
+      logger.info(`Found ${totalChanges} changes since last run`);
+    } else {
+      logger.info('No changes since last run');
+    }
 
-  // Set up file watching for future changes
-  await setupWatchSubscriptions(config, createChangeHandler());
+    // Set up file watching for future changes
+    await setupWatchSubscriptions(config, createChangeHandler());
+  }
 
   // Signal that startup is complete (daemon is ready)
   setFlag(FLAGS.STARTUP_READY);
@@ -398,8 +401,17 @@ export async function runWatchMode(options: SyncOptions): Promise<void> {
   // Start the job processor loop
   const processorHandle = startJobProcessorLoop(client, dryRun);
 
+  let remotePollerHandle: RemotePollerHandle | null = null;
+  if (config.sync_mode === 'download' || config.sync_mode === 'bidirectional') {
+    logger.info('Starting remote poller...');
+    remotePollerHandle = startRemotePoller(client, dryRun);
+  }
+
   // Start background reconciliation (safety net for missed watcher events)
-  const reconciliationHandle = startBackgroundReconciliation(dryRun, createChangeHandler());
+  let reconciliationHandle: ReturnType<typeof startBackgroundReconciliation> | null = null;
+  if (config.sync_mode === 'upload' || config.sync_mode === 'bidirectional') {
+    reconciliationHandle = startBackgroundReconciliation(dryRun, createChangeHandler());
+  }
 
   // Register reconcile signal handler
   const handleReconcile = async (): Promise<void> => {
@@ -426,7 +438,8 @@ export async function runWatchMode(options: SyncOptions): Promise<void> {
   });
 
   // Cleanup
-  reconciliationHandle.stop();
+  if (reconciliationHandle) reconciliationHandle.stop();
+  if (remotePollerHandle) remotePollerHandle.stop();
   await processorHandle.stop();
 }
 

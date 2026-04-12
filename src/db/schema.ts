@@ -31,6 +31,7 @@ export const SyncEventType = {
   CREATE_DIR: 'CREATE_DIR',
   UPDATE: 'UPDATE',
   DELETE: 'DELETE',
+  DOWNLOAD_FILE: 'DOWNLOAD_FILE',
 } as const;
 
 export type SyncEventType = (typeof SyncEventType)[keyof typeof SyncEventType];
@@ -79,6 +80,8 @@ export const syncJobs = sqliteTable(
     changeToken: text('change_token'),
     oldLocalPath: text('old_local_path'),
     oldRemotePath: text('old_remote_path'),
+    /** Node UID on Proton Drive (used for download jobs) */
+    nodeUid: text('node_uid'),
     createdAt: integer('created_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -131,4 +134,29 @@ export const nodeMapping = sqliteTable(
       .$defaultFn(() => new Date()),
   },
   (table) => [primaryKey({ columns: [table.localPath, table.remotePath] })]
+);
+
+/**
+ * Remote state table for tracking Proton Drive file state.
+ * Used to detect remote changes and trigger downloads.
+ */
+export const remoteState = sqliteTable(
+  'remote_state',
+  {
+    nodeUid: text('node_uid').notNull(),
+    parentNodeUid: text('parent_node_uid').notNull(),
+    remotePath: text('remote_path').notNull(),
+    name: text('name').notNull(),
+    isDirectory: integer('is_directory', { mode: 'boolean' }).notNull(),
+    revisionUid: text('revision_uid'),
+    size: integer('size'),
+    modificationTime: integer('modification_time', { mode: 'timestamp' }),
+    lastSeenAt: integer('last_seen_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    uniqueIndex('idx_remote_state_node_uid').on(table.nodeUid),
+    index('idx_remote_state_remote_path').on(table.remotePath),
+  ]
 );

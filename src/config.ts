@@ -36,6 +36,7 @@ export const RemoteDeleteBehavior = {
 export type RemoteDeleteBehavior = (typeof RemoteDeleteBehavior)[keyof typeof RemoteDeleteBehavior];
 
 export interface Config {
+  sync_mode: 'upload' | 'download' | 'bidirectional';
   sync_dirs: SyncDir[];
   sync_concurrency: number;
   remote_delete_behavior: RemoteDeleteBehavior;
@@ -71,6 +72,7 @@ export const DEFAULT_DASHBOARD_PORT = 4242;
 
 /** Default configuration values */
 export const defaultConfig: Config = {
+  sync_mode: 'upload',
   sync_dirs: [],
   sync_concurrency: DEFAULT_SYNC_CONCURRENCY,
   remote_delete_behavior: DEFAULT_REMOTE_DELETE_BEHAVIOR,
@@ -110,6 +112,15 @@ function parseConfig(throwOnError: boolean): Config | null {
   try {
     const content = readFileSync(CONFIG_FILE, 'utf-8');
     const config = JSON.parse(content) as Config;
+
+    if (config.sync_mode === undefined) {
+      config.sync_mode = 'upload';
+    } else if (!['upload', 'download', 'bidirectional'].includes(config.sync_mode)) {
+      const msg = 'Config "sync_mode" must be "upload", "download", or "bidirectional"';
+      if (throwOnError) throw new Error(msg);
+      logger.error(msg);
+      return null;
+    }
 
     if (!config.sync_dirs) {
       config.sync_dirs = [];
@@ -249,6 +260,7 @@ function reloadConfig(): void {
 
   // Send signals for keys that changed
   const keys: ConfigKey[] = [
+    'sync_mode',
     'sync_dirs',
     'sync_concurrency',
     'remote_delete_behavior',

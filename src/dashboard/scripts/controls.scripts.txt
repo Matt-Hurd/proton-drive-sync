@@ -98,6 +98,7 @@
     const validDirs = syncDirs.filter((d) => d.source_path.trim());
 
     const config = {
+      sync_mode: document.getElementById('sync-mode')?.value || 'upload',
       sync_concurrency: parseInt(document.getElementById('sync-concurrency').value) || 8,
       sync_dirs: validDirs.map((d) => ({
         source_path: d.source_path.trim(),

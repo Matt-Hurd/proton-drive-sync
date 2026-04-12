@@ -126,7 +126,11 @@ async function spawnDaemon(options: StartOptions): Promise<void> {
   // Clear any stale startup_ready flag from previous run
   clearFlag(FLAGS.STARTUP_READY);
 
-  const child = Bun.spawn(['proton-drive-sync', ...args], {
+  // Reconstruct the base command (handles both compiled binaries and 'bun run' correctly)
+  const isCompiled = process.argv[1]?.startsWith('/$bunfs');
+  const baseCmd = isCompiled ? [process.execPath] : [process.execPath, process.argv[1]];
+
+  const child = Bun.spawn([...baseCmd, ...args], {
     detached: true,
     stdio: ['ignore', 'ignore', 'inherit'], // stderr inherited for error visibility
     env: { ...process.env },

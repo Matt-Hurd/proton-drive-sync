@@ -50,9 +50,10 @@ async function createProtonDriveClientFromSession(
     metricHandlers: [], // No metrics logging
   });
 
+  const entitiesCache = new sdk.MemoryCache<string>();
   const client = new sdk.ProtonDriveClient({
     httpClient,
-    entitiesCache: new sdk.MemoryCache(),
+    entitiesCache,
     cryptoCache: new sdk.MemoryCache(),
     // @ts-expect-error - PrivateKey types differ between openpgp imports
     account,
@@ -62,7 +63,9 @@ async function createProtonDriveClientFromSession(
     telemetry,
   });
 
-  return client as unknown as ProtonDriveClient;
+  const finalClient = client as unknown as ProtonDriveClient;
+  finalClient.clearEntitiesCache = () => entitiesCache.clear();
+  return finalClient;
 }
 
 /**

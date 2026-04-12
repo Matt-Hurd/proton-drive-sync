@@ -5,10 +5,12 @@
  */
 
 import { relative, basename } from 'path';
+import { statSync, existsSync, renameSync } from 'fs';
 import { SyncEventType } from '../db/schema.js';
-import { db } from '../db/index.js';
+import { db, type Tx } from '../db/index.js';
 import { createNode } from '../proton/create.js';
 import { deleteNode } from '../proton/delete.js';
+import { downloadNode, getConflictFilename } from '../proton/download.js';
 import { logger } from '../logger.js';
 import { DEFAULT_SYNC_CONCURRENCY, getConfig } from '../config.js';
 import type { ProtonDriveClient } from '../proton/types.js';
@@ -34,6 +36,7 @@ import {
   deleteChangeToken,
   deleteChangeTokensUnderPath,
 } from './fileState.js';
+import { getRemoteState } from './remoteState.js';
 import { scanDirectory } from './watcher.js';
 
 // ============================================================================
@@ -327,6 +330,76 @@ async function processJob(client: ProtonDriveClient, job: Job, dryRun: boolean):
           }
         });
 
+        return;
+      }
+
+      case SyncEventType.DOWNLOAD_FILE: {
+        logger.info(`Downloading: ${remotePath}`);
+
+        const nodeUid = job.nodeUid;
+        if (!nodeUid) {
+          throw new Error('DOWNLOAD_FILE job missing nodeUid');
+        }
+
+        let downloadPath = localPath;
+        const fileState = getFileState(localPath, db as unknown as Tx);
+
+        let shouldOverwriteLocal = true;
+
+        if (existsSync(localPath)) {
+          const stats = statSync(localPath);
+          const currentHash = `${stats.mtimeMs}:${stats.size}`;
+
+          if (!fileState || fileState.changeToken !== currentHash) {
+            // Local file was modified independently!
+            shouldOverwriteLocal = false;
+          }
+        }
+
+        if (!shouldOverwriteLocal) {
+          downloadPath = getConflictFilename(localPath);
+          logger.warn(`Local file modified. Downloading to conflicted copy: ${downloadPath}`);
+        }
+
+        if (dryRun) {
+          logger.info(`[DRY-RUN] Would download ${remotePath} to ${downloadPath}`);
+        } else {
+          const result = await downloadNode(client, nodeUid, downloadPath, remotePath, undefined);
+          if (!result.success) {
+            throw new Error(result.error);
+          }
+
+          logger.info(`Success: Downloaded ${result.bytesDownloaded} bytes from ${remotePath}`);
+
+          db.transaction((tx) => {
+            const rState = getRemoteState(nodeUid, tx);
+            if (rState) {
+              setNodeMapping(
+                downloadPath,
+                remotePath,
+                nodeUid,
+                rState.parentNodeUid,
+                false,
+                dryRun,
+                tx
+              );
+            }
+
+            // Stat the temp path BEFORE renaming so we get exact mtime/size
+            // This prevents the watcher from enqueuing an upload when we rename it
+            const tempStats = statSync(result.tempPath!);
+            const tempHash = `${tempStats.mtimeMs}:${tempStats.size}`;
+            storeFileState(downloadPath, tempHash, null, dryRun, tx);
+
+            markJobSynced(id, localPath, dryRun, tx);
+          });
+
+          if (!dryRun) {
+            // Now that DB is aware of the changeToken, rename to final active path.
+            // The local watcher will trigger, see it, evaluate the hash, and skip it securely.
+            renameSync(result.tempPath!, downloadPath);
+          }
+        }
         return;
       }
 

@@ -72,6 +72,8 @@ export interface Job {
   oldLocalPath: string | null;
   /** Original remote path before rename/move (null for CREATE/UPDATE/DELETE) */
   oldRemotePath: string | null;
+  /** Node UID on Proton Drive (used for download jobs) */
+  nodeUid: string | null;
 }
 
 // Re-export for backward compatibility
@@ -92,7 +94,10 @@ export const dryRunSyncedIds = new Set<number>();
 // ============================================================================
 
 /** Parameters for creating a new sync job - subset of Job fields */
-export type EnqueueJobParams = Pick<Job, 'eventType' | 'localPath' | 'remotePath' | 'changeToken'>;
+export type EnqueueJobParams = Pick<
+  Job,
+  'eventType' | 'localPath' | 'remotePath' | 'changeToken'
+> & { nodeUid?: string };
 
 /**
  * Add a sync job to the queue, or update if one already exists for this localPath.
@@ -136,6 +141,7 @@ export function enqueueJob(params: EnqueueJobParams, dryRun: boolean, tx: Tx): v
         changeToken: params.changeToken ?? null,
         oldLocalPath: null,
         oldRemotePath: null,
+        nodeUid: params.nodeUid ?? null,
       })
       .onConflictDoUpdate({
         target: [schema.syncJobs.localPath, schema.syncJobs.remotePath],
@@ -148,6 +154,7 @@ export function enqueueJob(params: EnqueueJobParams, dryRun: boolean, tx: Tx): v
           changeToken: params.changeToken ?? null,
           oldLocalPath: null,
           oldRemotePath: null,
+          nodeUid: params.nodeUid ?? null,
         },
       })
   );
@@ -241,6 +248,7 @@ export function getNextPendingJob(dryRun: boolean = false): Job | undefined {
         changeToken: schema.syncJobs.changeToken,
         oldLocalPath: schema.syncJobs.oldLocalPath,
         oldRemotePath: schema.syncJobs.oldRemotePath,
+        nodeUid: schema.syncJobs.nodeUid,
       })
       .from(schema.syncJobs)
       .where(
@@ -315,6 +323,7 @@ export function getNextPendingJob(dryRun: boolean = false): Job | undefined {
         changeToken: schema.syncJobs.changeToken,
         oldLocalPath: schema.syncJobs.oldLocalPath,
         oldRemotePath: schema.syncJobs.oldRemotePath,
+        nodeUid: schema.syncJobs.nodeUid,
       })
       .from(schema.syncJobs)
       .leftJoin(

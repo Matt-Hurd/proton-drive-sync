@@ -31,6 +31,30 @@
     </div>
 
     <div class="space-y-6">
+      <!-- Sync Mode -->
+      <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
+        <div class="flex items-center gap-2 mb-4">
+          <h3 class="text-lg font-semibold text-white">Sync Mode</h3>
+          <div class="relative group">
+            {{ICON_INFO}}
+            <div
+              class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-xs text-gray-300 w-96 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10"
+            >
+              Control how files are synchronized between your local machine and Proton Drive.
+            </div>
+          </div>
+        </div>
+        <select
+          id="sync-mode"
+          class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-proton transition-colors"
+          onchange="saveConfig()"
+        >
+          <option value="upload" {{SYNC_MODE_UPLOAD_SELECTED}}>Upload (Local to Remote only)</option>
+          <option value="download" {{SYNC_MODE_DOWNLOAD_SELECTED}}>Download (Remote to Local only)</option>
+          <option value="bidirectional" {{SYNC_MODE_BIDI_SELECTED}}>Bidirectional (Two-way sync)</option>
+        </select>
+      </div>
+
       <!-- Sync Concurrency -->
       <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
         <div class="flex items-center gap-2 mb-4">

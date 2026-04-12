@@ -7,6 +7,7 @@
 export { createNode } from './create.js';
 export { deleteNode } from './delete.js';
 export { relocateNode, getParentFolderUid } from './rename.js';
+export { downloadNode } from './download.js';
 export {
   parsePath,
   findNodeByName,
@@ -32,6 +33,10 @@ export type {
   CreateResult,
   DeleteOperationResult,
   ParsedPath,
+  DownloadController,
+  FileDownloader,
+  DownloadProtonDriveClient,
+  DownloadResult,
   ApiError,
 } from './types.js';
 export type { RelocateResult } from './rename.js';

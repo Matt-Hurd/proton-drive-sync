@@ -111,8 +111,8 @@ export async function scanDirectory(
 
       const fullPath = join(watchDir, entry);
 
-      // Skip excluded paths
-      if (isPathExcluded(fullPath, watchDir, excludePatterns)) {
+      // Skip excluded paths and temporary download files
+      if (entry.endsWith('.downloading') || isPathExcluded(fullPath, watchDir, excludePatterns)) {
         logger.debug(`[scan] Skipping excluded path: ${entry}`);
         continue;
       }
@@ -447,7 +447,8 @@ export async function setupWatchSubscriptions(
           pollInterval: 100,
         },
         // Use closure to capture watchDir and excludePatterns for exclusion check
-        ignored: (path: string) => isPathExcluded(path, watchDir, excludePatterns),
+        ignored: (path: string) =>
+          path.endsWith('.downloading') || isPathExcluded(path, watchDir, excludePatterns),
       });
 
       watcher

@@ -96,6 +96,24 @@ export interface UploadMetadata {
 }
 
 // ============================================================================
+// Download Types
+// ============================================================================
+
+export interface DownloadController {
+  pause(): void;
+  resume(): void;
+  completion(): Promise<void>;
+}
+
+export interface FileDownloader {
+  getClaimedSizeInBytes(): number | undefined;
+  downloadToStream(
+    stream: WritableStream,
+    onProgress?: (downloadedBytes: number) => void
+  ): DownloadController;
+}
+
+// ============================================================================
 // Client Interfaces
 // ============================================================================
 
@@ -103,6 +121,7 @@ export interface UploadMetadata {
  * Base Proton Drive client interface with common operations
  */
 export interface BaseProtonDriveClient {
+  clearEntitiesCache?(): void;
   iterateFolderChildren(folderUid: string): AsyncIterable<NodeResult>;
   getMyFilesRootFolder(): Promise<RootFolderResult>;
 }
@@ -150,10 +169,22 @@ export interface RelocateProtonDriveClient extends BaseProtonDriveClient {
 }
 
 /**
+ * Proton Drive client interface for download operations
+ */
+export interface DownloadProtonDriveClient extends BaseProtonDriveClient {
+  getFileDownloader(nodeUid: string, signal?: AbortSignal): Promise<FileDownloader>;
+  getFileRevisionDownloader(nodeRevisionUid: string, signal?: AbortSignal): Promise<FileDownloader>;
+}
+
+/**
  * Full Proton Drive client interface with all operations
  */
 export interface ProtonDriveClient
-  extends CreateProtonDriveClient, DeleteProtonDriveClient, RelocateProtonDriveClient {}
+  extends
+    CreateProtonDriveClient,
+    DeleteProtonDriveClient,
+    RelocateProtonDriveClient,
+    DownloadProtonDriveClient {}
 
 // ============================================================================
 // Operation Results
@@ -174,6 +205,16 @@ export interface DeleteOperationResult {
   trashed: boolean; // true if moved to trash, false if permanently deleted
   nodeUid?: string;
   nodeType?: string;
+  error?: string;
+}
+
+export interface DownloadResult {
+  success: boolean;
+  localPath: string;
+  remotePath: string;
+  nodeUid: string;
+  bytesDownloaded: number;
+  tempPath?: string;
   error?: string;
 }
 
