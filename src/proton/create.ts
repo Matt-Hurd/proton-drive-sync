@@ -49,6 +49,13 @@ async function ensureRemotePath(
       // Once we start creating, all subsequent folders need to be created
       const result = await client.createFolder(currentFolderUid, folderName);
       if (!result.ok || !result.value) {
+        if (String(result.error).includes('already exists')) {
+          const retryUid = await findFolderByName(client, currentFolderUid, folderName);
+          if (retryUid) {
+            currentFolderUid = retryUid;
+            continue;
+          }
+        }
         throw new Error(`Failed to create folder "${folderName}": ${result.error}`);
       }
       currentFolderUid = result.value.uid;
@@ -62,6 +69,14 @@ async function ensureRemotePath(
         // Folder doesn't exist, create it and all subsequent folders
         const result = await client.createFolder(currentFolderUid, folderName);
         if (!result.ok || !result.value) {
+          if (String(result.error).includes('already exists')) {
+            const retryUid = await findFolderByName(client, currentFolderUid, folderName);
+            if (retryUid) {
+              currentFolderUid = retryUid;
+              needToCreate = false; // Existed concurrently, children might also exist
+              continue;
+            }
+          }
           throw new Error(`Failed to create folder "${folderName}": ${result.error}`);
         }
         currentFolderUid = result.value.uid;
@@ -197,9 +212,28 @@ async function uploadFile(
     const webStream = Bun.file(localFilePath).stream();
     uploadController = await revisionUploader.uploadFromStream(webStream, []);
   } else {
-    const fileUploader = await client.getFileUploader(targetFolderUid, fileName, metadata);
-    const webStream = Bun.file(localFilePath).stream();
-    uploadController = await fileUploader.uploadFromStream(webStream, []);
+    try {
+      const fileUploader = await client.getFileUploader(targetFolderUid, fileName, metadata);
+      const webStream = Bun.file(localFilePath).stream();
+      uploadController = await fileUploader.uploadFromStream(webStream, []);
+    } catch (error) {
+      const errStr = error instanceof Error ? error.message : String(error);
+      if (errStr.includes('already exists')) {
+        const existingFileNow = await findFileByName(client, targetFolderUid, fileName);
+        if (existingFileNow) {
+          const revisionUploader = await client.getFileRevisionUploader(
+            existingFileNow.uid,
+            metadata
+          );
+          const webStream = Bun.file(localFilePath).stream();
+          uploadController = await revisionUploader.uploadFromStream(webStream, []);
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
   }
 
   // Wait for completion
@@ -230,6 +264,10 @@ async function createDirectory(
   } else {
     const result = await client.createFolder(targetFolderUid, dirName, modificationTime);
     if (!result.ok || !result.value) {
+      if (String(result.error).includes('already exists')) {
+        const retryUid = await findFolderByName(client, targetFolderUid, dirName);
+        if (retryUid) return retryUid;
+      }
       throw new Error(`Failed to create directory "${dirName}": ${result.error}`);
     }
     return result.value.uid;
