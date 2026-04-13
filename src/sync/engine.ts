@@ -653,6 +653,8 @@ function startJobProcessorLoop(client: ProtonDriveClient, dryRun: boolean): Proc
   let running = true;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let loopCount = 0;
+  let wasBusy = false;
+
   const processLoop = (): void => {
     loopCount++;
 
@@ -669,6 +671,16 @@ function startJobProcessorLoop(client: ProtonDriveClient, dryRun: boolean): Proc
 
     if (!paused) {
       processAvailableJobs(client, dryRun);
+
+      const pendingJobs = getPendingJobCount();
+      const activeTasks = getActiveTaskCount();
+
+      if (pendingJobs > 0 || activeTasks > 0) {
+        wasBusy = true;
+      } else if (wasBusy) {
+        logger.info('All Caught Up');
+        wasBusy = false;
+      }
     }
 
     if (running) {

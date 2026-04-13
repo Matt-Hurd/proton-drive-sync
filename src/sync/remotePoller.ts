@@ -9,7 +9,7 @@ import { logger } from '../logger.js';
 import { db } from '../db/index.js';
 import { SyncEventType } from '../db/schema.js';
 import { getFileStatesBulk } from './fileState.js';
-import { enqueueJobsBatch, type EnqueueJobParams } from './queue.js';
+import { enqueueJobsBatch, type EnqueueJobParams, hasActiveJobsBulk } from './queue.js';
 import { traverseRemotePath } from '../proton/utils.js';
 import {
   scanRemoteTree,
@@ -68,6 +68,7 @@ export async function pollOnce(client: ProtonDriveClient, dryRun: boolean): Prom
           remotePathToLocalPath(c.node.remotePath, syncDir.remote_root, syncDir.source_path)
         );
       const fileStates = getFileStatesBulk(localPaths);
+      const activeLocalJobs = hasActiveJobsBulk(localPaths);
 
       for (const change of changes) {
         const node = change.node;
@@ -88,6 +89,12 @@ export async function pollOnce(client: ProtonDriveClient, dryRun: boolean): Prom
         if (fileStates.has(localPath) && change.type === 'NEW') {
           // We already have local state for this file and it's marked as a NEW change remotely.
           // This means we just uploaded it and this is the first remote poll seeing it.
+          continue;
+        }
+
+        // Check if the engine is actively processing this file locally (CREATE/UPDATE/etc)
+        if (activeLocalJobs.has(localPath)) {
+          // Local intent is actively pending execution. Defer to local file tree.
           continue;
         }
 

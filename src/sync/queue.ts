@@ -247,6 +247,30 @@ export function enqueueJobsBatch(jobs: EnqueueJobParams[], dryRun: boolean, tx: 
 }
 
 /**
+ * Check if the given local paths have any jobs (PENDING or PROCESSING) in the queue.
+ * Used to avoid enqueuing remote downloads for files currently being uploaded locally.
+ */
+export function hasActiveJobsBulk(localPaths: string[]): Set<string> {
+  const result = new Set<string>();
+  if (localPaths.length === 0) return result;
+
+  const CHUNK_SIZE = 900;
+  for (let i = 0; i < localPaths.length; i += CHUNK_SIZE) {
+    const chunk = localPaths.slice(i, i + CHUNK_SIZE);
+    const rows = db
+      .select({ localPath: schema.syncJobs.localPath })
+      .from(schema.syncJobs)
+      .where(inArray(schema.syncJobs.localPath, chunk))
+      .all();
+    for (const row of rows) {
+      result.add(row.localPath);
+    }
+  }
+
+  return result;
+}
+
+/**
  * Cleans up orphaned jobs on startup.
  * - Resets any PROCESSING jobs back to PENDING (stale since app wasn't running)
  * - Deletes PENDING jobs whose localPath doesn't match any current sync_dirs
